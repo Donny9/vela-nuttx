@@ -38,6 +38,7 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/clock.h>
+#include <nuttx/clock_changed_notifier.h>
 #include <nuttx/trace.h>
 
 #include "clock/clock.h"
@@ -184,6 +185,8 @@ static void clock_inittime(FAR const struct timespec *tp)
       g_basetime.tv_nsec += NSEC_PER_SEC;
       g_basetime.tv_sec--;
     }
+
+  clock_changed_notifier_call_chain(CLOCK_REALTIME, &g_basetime);
 #else
   clock_inittimekeeping(tp);
 #endif

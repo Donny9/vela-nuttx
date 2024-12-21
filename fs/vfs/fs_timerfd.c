@@ -32,8 +32,10 @@
 #include <debug.h>
 
 #include <nuttx/irq.h>
-#include <nuttx/wdog.h>
 #include <nuttx/mutex.h>
+#include <nuttx/nuttx.h>
+#include <nuttx/wdog.h>
+#include <nuttx/clock_changed_notifier.h>
 
 #include <sys/ioctl.h>
 #include <sys/timerfd.h>
@@ -67,6 +69,8 @@ struct timerfd_priv_s
                                       * timers */
   struct wdog_s             wdog;    /* The watchdog that provides the timing */
   timerfd_t                 counter; /* timerfd counter */
+  struct notifier_block     nb;      /* The clock changed notifier node */
+  bool                      cancel;  /* Canceled by discontinuous change to the clock */
   uint8_t                   crefs;   /* References counts on timerfd (max: 255) */
 
   /* The following is a list if poll structures of threads waiting for
@@ -285,6 +289,13 @@ static ssize_t timerfd_read(FAR struct file *filep, FAR char *buffer,
 
   intflags = enter_critical_section();
 
+  if (dev->cancel)
+    {
+      dev->cancel = false;
+      leave_critical_section(intflags);
+      return -ECANCELED;
+    }
+
   /* Wait for an incoming event */
 
   if (dev->counter == 0)
@@ -306,6 +317,13 @@ static ssize_t timerfd_read(FAR struct file *filep, FAR char *buffer,
               leave_critical_section(intflags);
               nxsem_destroy(&sem.sem);
               return ret;
+            }
+
+          if (dev->cancel)
+            {
+              dev->cancel = false;
+              leave_critical_section(intflags);
+              return -ECANCELED;
             }
         }
       while (dev->counter == 0);
@@ -371,11 +389,9 @@ static int timerfd_poll(FAR struct file *filep, FAR struct pollfd *fds,
 
   /* Notify the POLLIN event if the counter is not zero */
 
-  if (dev->counter > 0)
+  if (dev->counter > 0 || dev->cancel)
     {
-#ifdef CONFIG_TIMER_FD_POLL
       poll_notify(&fds, 1, POLLIN);
-#endif
     }
 
 out:
@@ -384,28 +400,9 @@ out:
 }
 #endif
 
-static void timerfd_timeout(wdparm_t arg)
+static void timerfd_notify(FAR struct timerfd_priv_s *dev)
 {
-  FAR struct timerfd_priv_s *dev = (FAR struct timerfd_priv_s *)arg;
   FAR timerfd_waiter_sem_t *cur_sem;
-  irqstate_t intflags;
-
-  /* Disable interrupts to ensure that expiration counter is accessed
-   * atomically
-   */
-
-  intflags = enter_critical_section();
-
-  /* Increment timer expiration counter */
-
-  dev->counter++;
-
-  /* If this is a repetitive timer, then restart the watchdog */
-
-  if (dev->delay > 0)
-    {
-      wd_start(&dev->wdog, dev->delay, timerfd_timeout, arg);
-    }
 
 #ifdef CONFIG_TIMER_FD_POLL
   /* Notify all poll/select waiters */
@@ -423,6 +420,58 @@ static void timerfd_timeout(wdparm_t arg)
     }
 
   dev->rdsems = NULL;
+}
+
+static int timerfd_changed_handler(FAR struct notifier_block *nb,
+                                   unsigned long action, FAR void *data)
+{
+  if (action == CLOCK_REALTIME)
+    {
+      FAR struct timerfd_priv_s *dev;
+
+      dev = container_of(nb, struct timerfd_priv_s, nb);
+      dev->cancel = true;
+      wd_cancel(&dev->wdog);
+      timerfd_notify(dev);
+      if (dev->delay > 0)
+        {
+          wd_start(&dev->wdog, dev->delay, timerfd_timeout,
+                   (wdparm_t)dev);
+        }
+      else
+        {
+          unregister_clock_changed_notifier(&dev->nb);
+        }
+    }
+
+  return 0;
+}
+
+static void timerfd_timeout(wdparm_t arg)
+{
+  FAR struct timerfd_priv_s *dev = (FAR struct timerfd_priv_s *)arg;
+  irqstate_t intflags;
+
+  /* Disable interrupts to ensure that expiration counter is accessed
+   * atomically
+   */
+
+  intflags = enter_critical_section();
+
+  unregister_clock_changed_notifier(&dev->nb);
+
+  /* Increment timer expiration counter */
+
+  dev->counter++;
+
+  /* If this is a repetitive timer, then restart the watchdog */
+
+  if (dev->delay > 0)
+    {
+      wd_start(&dev->wdog, dev->delay, timerfd_timeout, arg);
+    }
+
+  timerfd_notify(dev);
 
   leave_critical_section(intflags);
 }
@@ -501,7 +550,7 @@ int timerfd_settime(int fd, int flags,
       goto errout;
     }
 
-  if ((flags & ~TFD_TIMER_ABSTIME) != 0)
+  if ((flags & ~(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET)) != 0)
     {
       ret = -EINVAL;
       goto errout;
@@ -527,6 +576,19 @@ int timerfd_settime(int fd, int flags,
    */
 
   intflags = enter_critical_section();
+
+  if (dev->cancel)
+    {
+      dev->cancel = false;
+      leave_critical_section(intflags);
+      return -ECANCELED;
+    }
+
+  if (flags & TFD_TIMER_CANCEL_ON_SET)
+    {
+      dev->nb.notifier_call = timerfd_changed_handler;
+      register_clock_changed_notifier(&dev->nb);
+    }
 
   if (old_value)
     {

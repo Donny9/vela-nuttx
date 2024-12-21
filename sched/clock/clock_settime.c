@@ -32,6 +32,7 @@
 #include <debug.h>
 
 #include <nuttx/arch.h>
+#include <nuttx/clock_changed_notifier.h>
 #include <nuttx/irq.h>
 #include <sys/time.h>
 
@@ -79,6 +80,7 @@ void nxclock_settime(clockid_t clock_id, FAR const struct timespec *tp)
 
   clock_systime_timespec(&bias);
   clock_timespec_subtract(tp, &bias, &g_basetime);
+  clock_changed_notifier_call_chain(CLOCK_REALTIME, tp);
 
   leave_critical_section(flags);
 

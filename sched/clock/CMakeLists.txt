@@ -23,6 +23,7 @@
 set(SRCS
     clock.c
     clock_initialize.c
+    clock_changed_notifier.c
     clock_settime.c
     clock_gettime.c
     clock_realtime2absticks.c

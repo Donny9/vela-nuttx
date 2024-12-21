@@ -27,6 +27,7 @@
 #include <nuttx/nuttx.h>
 #include <nuttx/list.h>
 #include <nuttx/clock.h>
+#include <nuttx/clock_changed_notifier.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/rpmsg/rpmsg.h>
 #include <nuttx/mutex.h>
@@ -306,8 +307,13 @@ static int rpmsg_rtc_ept_cb(FAR struct rpmsg_endpoint *ept, FAR void *data,
           struct rpmsg_rtc_set_s *msg = data;
 
 #ifdef CONFIG_RTC_RPMSG_SYNC_BASETIME
+          struct timespec ts;
+
           g_basetime.tv_sec  = msg->base_sec;
           g_basetime.tv_nsec = msg->base_nsec;
+
+          clock_gettime(CLOCK_REALTIME, &ts);
+          clock_changed_notifier_call_chain(CLOCK_REALTIME, &ts);
 #else
           struct timespec tp;
 

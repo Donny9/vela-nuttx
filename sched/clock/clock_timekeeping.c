@@ -36,6 +36,7 @@
 
 #include <nuttx/irq.h>
 #include <nuttx/arch.h>
+#include <nuttx/clock_changed_notifier.h>
 
 #include "clock/clock.h"
 
@@ -132,6 +133,7 @@ int clock_timekeeping_set_wall_time(FAR const struct timespec *ts)
     }
 
   memcpy(&g_clock_wall_time, ts, sizeof(struct timespec));
+  clock_changed_notifier_call_chain(CLOCK_REALTIME, ts);
 
   g_clock_adjust       = 0;
   g_clock_last_counter = counter;
@@ -291,6 +293,7 @@ void clock_inittimekeeping(FAR const struct timespec *tp)
       clock_basetime(&g_clock_wall_time);
     }
 
+  clock_changed_notifier_call_chain(CLOCK_REALTIME, &g_clock_wall_time);
   up_timer_gettick(&g_clock_last_counter);
 }
 
